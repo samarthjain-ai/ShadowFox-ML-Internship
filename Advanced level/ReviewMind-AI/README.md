@@ -1,220 +1,186 @@
-# ShadowFox — Machine Learning Engineer Internship
+# ReviewMind AI — Universal Customer Feedback Intelligence Platform
 
-Welcome to my **Machine Learning Engineer Internship Projects Repository** at ShadowFox.
+ReviewMind AI is an interactive machine learning application designed to analyze customer feedback and transform text reviews into meaningful insights.
 
-This repository contains the projects I completed across three internship levels — Beginner, Intermediate, and Advanced. The projects demonstrate practical experience in Python, data analysis, machine learning, model evaluation, and application development.
+The project was developed as part of my **ShadowFox Machine Learning Engineer Internship — Advanced Level**.
+
+The application combines traditional machine learning, transformer-based NLP models, topic modeling, and interactive data visualization in a Streamlit interface.
 
 ---
 
-## 👨‍💻 About the Internship
+## 👨‍💻 Project Information
 
-**Organization:** ShadowFox  
-**Role:** Machine Learning Engineer Intern  
-**Internship Domain:** Machine Learning and Artificial Intelligence
-
+**Project Name:** ReviewMind AI  
 **Intern:** Samarth Jain  
-**Enrolment ID:** 25ADV3ARI0039 / 34775  
+**Organization:** ShadowFox  
+**Internship Role:** Machine Learning Engineer Intern  
 **Programme:** B.Tech AI-ML (IAC)  
-**University:** Sage University, Indore  
-**Internship Duration:** 1 November 2026 – 30 November 2026
+**University:** Sage University, Indore
 
 ---
 
-## 📂 Projects Overview
+## 🎯 Project Objective
 
-### 1. Beginner Level — Boston House Price Prediction
-
-**Objective:** Build machine learning regression models to predict house prices using housing-related features.
-
-**Key Work:**
-
-- Dataset exploration and preprocessing
-- Exploratory Data Analysis (EDA)
-- Implementation of multiple regression algorithms
-- Model evaluation and comparison
-- Performance visualization
-
-**Models Implemented:**
-
-- Linear Regression
-- Decision Tree Regressor
-- Gradient Boosting Regressor
-- Random Forest Regressor
-- Support Vector Regression (SVR)
-
-**Results:**
-
-- Best Random Forest R² Score: 0.8752
-- Random Forest MSE: 9.1504
-- Best SVR MAE: 2.0810
-
-**Project Folder:** `Beginner level/Boston-House-Price-Prediction/`
+The main objective is to build a reusable customer feedback intelligence platform that can process uploaded review datasets, analyze customer opinions, identify emotions and topics, and present the results through interactive visualizations.
 
 ---
 
-### 2. Intermediate Level — Car Selling Price Prediction
+## ✨ Key Features
 
-**Objective:** Develop a regression model to estimate the selling price of used cars based on their characteristics.
+### 1. Dataset Upload and Profiling
 
-**Key Work:**
+- Upload customer feedback datasets in CSV and Excel formats.
+- Preview uploaded data.
+- Identify text and label columns.
+- Perform dataset profiling and quality checks.
 
-- Data cleaning and preprocessing
-- Feature engineering
-- Categorical feature encoding
-- Model training and comparison
-- Hyperparameter tuning
-- Feature importance analysis
+### 2. Sentiment Analysis
 
-**Models Implemented:**
+- Classify customer reviews into positive and negative sentiment.
+- Use TF-IDF with Logistic Regression.
+- Support transformer-based sentiment analysis using DistilBERT.
 
-- Linear Regression
-- Decision Tree Regressor
-- Random Forest Regressor
-- Gradient Boosting Regressor
-- Support Vector Regression (SVR)
+### 3. Emotion Detection
 
-**Results:**
+- Analyze emotional patterns in customer feedback.
+- Use the DistilRoBERTa emotion classification model.
+- Present emotion predictions and related insights.
 
-Best baseline model: Gradient Boosting Regressor
+### 4. Topic Modeling
 
-- MAE: 1.1349
-- MSE: 6.3667
-- RMSE: 2.5232
-- R² Score: 0.7530
+- Discover common themes and topics in customer reviews.
+- Use TF-IDF and Non-negative Matrix Factorization (NMF).
+- Summarize recurring discussion patterns.
 
-**Project Folder:** `Intermediate level/Car-Selling-Price-Prediction/`
+### 5. Ask ReviewMind Assistant
+
+- Provides a local, rule-based question-answering interface.
+- Answers supported questions using available dataset information and analysis results.
+- Does not depend on a paid external LLM API.
+
+### 6. Interactive Visualizations
+
+- Explore sentiment and emotion distributions.
+- View topic analysis.
+- Create custom visualizations using the graph builder.
+
+### 7. Export Results
+
+- Export supported analysis results as CSV files.
 
 ---
 
-### 3. Advanced Level — ReviewMind AI
+## 🧠 Machine Learning Technologies
 
-**Project Title:** ReviewMind AI — Universal Customer Feedback Intelligence Platform
+| Technology | Purpose |
+|---|---|
+| Python | Main programming language |
+| Pandas and NumPy | Data processing |
+| Scikit-learn | Machine learning and preprocessing |
+| TF-IDF | Text feature extraction |
+| Logistic Regression | Sentiment classification |
+| DistilBERT | Transformer-based sentiment analysis |
+| DistilRoBERTa | Emotion classification |
+| NMF | Topic modeling |
+| PyTorch | Deep learning framework |
+| Transformers | Transformer model implementation |
+| Streamlit | Interactive application |
+| Matplotlib and Seaborn | Data visualization |
 
-**Objective:** Build an interactive machine learning application that analyzes customer feedback and extracts useful insights from text reviews.
+---
 
-**Key Features:**
+## 📊 Sentiment Model Evaluation
 
-- CSV and Excel dataset upload
-- Dataset profiling and quality checks
-- Sentiment analysis
-- Emotion detection
-- Topic modeling
-- Interactive visualizations
-- Ask ReviewMind assistant
-- Custom graph builder
-- Analysis result exports
+The project evaluates two sentiment classification approaches.
 
-**Machine Learning Technologies:**
+| Metric | Logistic Regression | DistilBERT |
+|---|---:|---:|
+| Accuracy | 90.52% | 87.56% |
+| Precision | 89.45% | 89.47% |
+| Recall | 91.96% | 85.23% |
+| F1 Score | 90.69% | 87.30% |
+| ROC-AUC | 0.9663 | 0.9501 |
 
-- TF-IDF
-- Logistic Regression
-- DistilBERT
-- DistilRoBERTa
-- Non-negative Matrix Factorization (NMF)
+**Important Evaluation Note:** Logistic Regression and DistilBERT were trained using different training-set sizes. Logistic Regression used the full training split, while DistilBERT was trained on a balanced subset of 4,000 reviews for two epochs. Therefore, the results are not a perfectly controlled, like-for-like comparison.
 
-**Sentiment Model Evaluation:**
+---
 
-| **Metric** | **Logistic Regression** | **DistilBERT** |
-| ---------- | ----------------------- | -------------- |
-| Accuracy   | 90.52%                  | 87.56%         |
-| Precision  | 89.45%                  | 89.47%         |
-| Recall     | 91.96%                  | 85.23%         |
-| F1 Score   | 90.69%                  | 87.30%         |
-| ROC-AUC    | 0.9663                  | 0.9501         |
+## 🏗️ Application Workflow
 
-*Note: The models were trained using different training-set sizes, so their results should not be interpreted as a direct like-for-like comparison.*
+1. Upload a customer feedback dataset.
+2. Preview and profile the dataset.
+3. Select or identify the relevant text and label columns.
+4. Run the available analyses.
+5. Generate sentiment, emotion, and topic insights.
+6. Explore the results through visualizations.
+7. Ask supported questions using Ask ReviewMind.
+8. Export available analysis results.
 
-**Live Application:**  
+---
+
+## ⚙️ Technical Notes and Limitations
+
+- The application uses trained models for inference rather than retraining every model for every uploaded dataset.
+- DistilBERT was trained using IMDb reviews, so its performance may vary on other domains.
+- Emotion classification predictions may sometimes have low confidence or be inaccurate.
+- Ask ReviewMind is a local rule-based assistant with supported question types, not an unrestricted conversational LLM.
+- Results depend on the quality, structure, and domain of the uploaded dataset.
+- Large trained model files may not be included in GitHub because of repository file-size limitations.
+
+---
+
+## 🚀 Live Application
+
+**Streamlit Application:**  
 https://shadowfox-ml-internship-reviewmind-ai.streamlit.app/
 
-**Project Folder:** `Advanced level/ReviewMind-AI/`
-
 ---
 
-## 🛠️ Technologies and Tools Used
-
-- **Programming:** Python
-- **Data Analysis:** Pandas, NumPy
-- **Visualization:** Matplotlib, Seaborn
-- **Machine Learning:** Scikit-learn
-- **Deep Learning and NLP:** PyTorch, Transformers
-- **Application Development:** Streamlit
-- **Development Environment:** Jupyter Notebook
-- **Version Control:** Git and GitHub
-
----
-
-## 📁 Repository Structure
+## 📁 Project Structure
 
 ```text
-ShadowFox-ML-Internship/
+ReviewMind-AI/
 │
-├── Beginner level/
-│   └── Boston-House-Price-Prediction/
-│       └── documentation/
-│
-├── Intermediate level/
-│   └── Car-Selling-Price-Prediction/
-│       └── documentation/
-│
-├── Advanced level/
-│   └── ReviewMind-AI/
-│       └── documentation/
-│
-├── Final Internship Documentation/
-│
+├── data/
+├── documentation/
+├── models/
+├── notebooks/
+├── outputs/
+├── src/
+├── tests/
 └── README.md
 ```
 
-Each project folder contains its respective source files, notebooks, datasets or supporting resources, and documentation.
-
-The `Final Internship Documentation` folder contains the combined internship report and presentation.
+The folders contain the project's datasets, documentation, model resources, notebooks, outputs, source code, and tests.
 
 ---
 
-## 📄 Project Documentation
+## 🎓 Learning Outcomes
 
-Individual project reports and presentations are available in the respective project `documentation` folders.
+Through this project, I gained practical experience in:
 
-The final combined internship report and presentation are available in:
-
-`Final Internship Documentation/`
-
----
-
-## 🎯 Key Learning Outcomes
-
-Through these projects, I gained practical experience in:
-
-- Data cleaning and exploratory data analysis
-- Regression and classification techniques
-- Feature engineering and preprocessing
-- Machine learning model evaluation
 - Natural Language Processing
-- Transformer-based models
-- Interactive application development
-- Data visualization and insight generation
-- GitHub version control and project organization
+- Text preprocessing and feature extraction
+- Traditional machine learning classification
+- Transformer-based NLP models
+- Sentiment and emotion analysis
+- Topic modeling
+- Model evaluation and comparison
+- Interactive dashboard development
+- Data visualization
+- Building an end-to-end machine learning application
 
 ---
 
-## 🚀 Conclusion
+## 🔗 Project Links
 
-This internship provided an opportunity to apply machine learning concepts to practical problems, progressing from traditional regression tasks to a complete customer feedback intelligence application.
-
-Each project contributed to improving my technical knowledge, problem-solving abilities, and understanding of the machine learning development workflow.
-
----
-
-## 🔗 Repository
-
-**GitHub:**  
+**GitHub Repository:**  
 https://github.com/samarthjain-ai/ShadowFox-ML-Internship
 
-**ReviewMind AI Live Demo:**  
+**Live Application:**  
 https://shadowfox-ml-internship-reviewmind-ai.streamlit.app/
 
 ---
 
 **Developed by Samarth Jain**  
-*Machine Learning Engineer Internship — ShadowFox*
+*Advanced Level Project — ShadowFox Machine Learning Engineer Internship*

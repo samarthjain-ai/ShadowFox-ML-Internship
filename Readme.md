@@ -10,11 +10,13 @@ This repository contains the projects I completed across three internship levels
 
 **Organization:** ShadowFox  
 **Role:** Machine Learning Engineer Intern  
-**Internship Domain:** Machine Learning and Artificial Intelligence  
+**Internship Domain:** Machine Learning and Artificial Intelligence
 
-**Intern:** [Your Name]  
-**Enrolment ID:** [Your Enrolment ID]  
-**Internship Duration:** [Start Date – End Date]
+**Intern:** Samarth Jain  
+**Enrolment ID:** 25ADV3ARI0039 / 34775  
+**Programme:** B.Tech AI-ML (IAC)  
+**University:** Sage University, Indore  
+**Internship Duration:** 1 November 2026 – 30 November 2026
 
 ---
 
@@ -25,6 +27,7 @@ This repository contains the projects I completed across three internship levels
 **Objective:** Build machine learning regression models to predict house prices using housing-related features.
 
 **Key Work:**
+
 - Dataset exploration and preprocessing
 - Exploratory Data Analysis (EDA)
 - Implementation of multiple regression algorithms
@@ -32,6 +35,7 @@ This repository contains the projects I completed across three internship levels
 - Performance visualization
 
 **Models Implemented:**
+
 - Linear Regression
 - Decision Tree Regressor
 - Gradient Boosting Regressor
@@ -39,6 +43,7 @@ This repository contains the projects I completed across three internship levels
 - Support Vector Regression (SVR)
 
 **Results:**
+
 - Best Random Forest R² Score: 0.8752
 - Random Forest MSE: 9.1504
 - Best SVR MAE: 2.0810
@@ -52,6 +57,7 @@ This repository contains the projects I completed across three internship levels
 **Objective:** Develop a regression model to estimate the selling price of used cars based on their characteristics.
 
 **Key Work:**
+
 - Data cleaning and preprocessing
 - Feature engineering
 - Categorical feature encoding
@@ -60,6 +66,7 @@ This repository contains the projects I completed across three internship levels
 - Feature importance analysis
 
 **Models Implemented:**
+
 - Linear Regression
 - Decision Tree Regressor
 - Random Forest Regressor
@@ -86,6 +93,7 @@ Best baseline model: Gradient Boosting Regressor
 **Objective:** Build an interactive machine learning application that analyzes customer feedback and extracts useful insights from text reviews.
 
 **Key Features:**
+
 - CSV and Excel dataset upload
 - Dataset profiling and quality checks
 - Sentiment analysis
@@ -97,6 +105,7 @@ Best baseline model: Gradient Boosting Regressor
 - Analysis result exports
 
 **Machine Learning Technologies:**
+
 - TF-IDF
 - Logistic Regression
 - DistilBERT
@@ -159,7 +168,7 @@ ShadowFox-ML-Internship/
 
 Each project folder contains its respective source files, notebooks, datasets or supporting resources, and documentation.
 
-The `Final Internship Documentation` folder will contain the combined internship report and presentation.
+The `Final Internship Documentation` folder contains the combined internship report and presentation.
 
 ---
 
@@ -167,7 +176,7 @@ The `Final Internship Documentation` folder will contain the combined internship
 
 Individual project reports and presentations are available in the respective project `documentation` folders.
 
-The final combined internship report and presentation will be available in:
+The final combined internship report and presentation are available in:
 
 `Final Internship Documentation/`
 
@@ -207,4 +216,5 @@ https://shadowfox-ml-internship-reviewmind-ai.streamlit.app/
 
 ---
 
-*Developed as part of the Machine Learning Engineer Internship at ShadowFox.*
+**Developed by Samarth Jain**  
+*Machine Learning Engineer Internship — ShadowFox*
