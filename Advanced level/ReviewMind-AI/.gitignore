@@ -1,0 +1,25 @@
+# Local Python environments
+.venv/
+.venv*/
+notebooks/.venv/
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Local model/download caches
+models/**/.cache/
+
+# Local environment and runtime files
+.env
+.env.*
+*.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+# Large trained model weights
+*.safetensors

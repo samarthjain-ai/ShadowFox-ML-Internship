@@ -1,0 +1,13 @@
+# ReviewMind AI is designed for a light interface. Pinning the theme stops
+# Streamlit from following the operating system's dark mode, which made
+# expanders, alerts and dropdowns render dark on top of the light stylesheet.
+[theme]
+base = "light"
+primaryColor = "#6d4fe6"
+backgroundColor = "#f4f5fb"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1d2136"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

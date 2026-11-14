@@ -1,0 +1,9 @@
+﻿customer_feedback,predicted_sentiment,sentiment_confidence,predicted_emotion,emotion_confidence,discovered_topic
+Excellent product. I really love it.,positive,0.9716,joy,0.97,1
+Very poor quality. I am disappointed.,negative,0.9638,sadness,0.8001,1
+The delivery was fast and the product is good.,positive,0.6763,neutral,0.495,1
+Customer support was rude and unhelpful.,negative,0.5469,anger,0.7115,1
+Amazing experience. I will buy again.,positive,0.9853,surprise,0.5048,1
+The product stopped working after two days.,negative,0.5103,sadness,0.5783,1
+I am satisfied with my purchase.,positive,0.5177,joy,0.912,1
+The packaging was damaged.,positive,0.5,disgust,0.5767,1

@@ -1,0 +1,922 @@
+"""Local, rule-based question answering for ReviewMind AI."""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections import Counter
+from typing import Any, Mapping, MutableMapping, Optional
+
+import numpy as np
+import pandas as pd
+
+from .data_profiler import detect_rating_columns
+
+
+_STOP_WORDS = {
+    "about", "after", "again", "also", "and", "are", "because", "been",
+    "being", "but", "can", "could", "customer", "customers", "did", "does",
+    "for", "from", "have", "how", "into", "its", "just", "more", "most",
+    "not", "our", "reviews", "review", "should", "than", "that", "their",
+    "there", "these", "they", "this", "those", "what", "when", "where",
+    "which", "with", "would", "your", "you", "the", "was", "were", "why",
+}
+
+
+def normalize_question(question: str) -> str:
+    """Normalize a user question for deterministic rule matching."""
+
+    if not isinstance(question, str):
+        raise TypeError("Question must be a string.")
+    return " ".join(
+        re.sub(r"[^a-z0-9%./_-]+", " ", question.lower()).split()
+    )
+
+
+def detect_intent(question: str) -> str:
+    """Return the supported intent matching ``question``."""
+
+    normalized = normalize_question(question)
+    if not normalized:
+        return "unsupported"
+
+    if any(token in normalized for token in ("trend", "monthly", "over time")):
+        return "date_trends"
+    if any(token in normalized for token in ("eda", "exploratory")):
+        return "eda"
+    if "compare" in normalized and "sentiment" in normalized:
+        return "category_compare"
+    if any(token in normalized for token in ("unhappy", "improve", "findings",
+                                              "business", "positive feedback",
+                                              "most positive", "most unhappy")):
+        return "business_insights"
+    if any(token in normalized for token in ("rating", "star")):
+        return "rating_stats"
+    if any(token in normalized for token in ("correlation", "numeric",
+                                              "numerical", "average", "median",
+                                              "minimum", "maximum", "min", "max")):
+        return "numeric_stats"
+    if any(token in normalized for token in ("keyword", "frequently occurring",
+                                              "most common word")):
+        return "keywords"
+    if any(token in normalized for token in ("topic", "theme", "complaint")):
+        return "topics"
+    if any(token in normalized for token in ("emotion", "joy", "sadness",
+                                              "anger", "fear", "surprise")):
+        return "emotion"
+    if any(token in normalized for token in ("sentiment", "positive", "negative",
+                                              "unhappy")):
+        if "percentage" in normalized or "distribution" in normalized:
+            return "sentiment"
+        if "negative" in normalized or "most negative" in normalized:
+            return "negative_reviews"
+        if "positive" in normalized and "percentage" not in normalized:
+            return "positive_reviews"
+        return "sentiment"
+    words = set(normalized.split())
+    if (
+        words.intersection({"row", "rows", "column", "columns", "missing", "dataset"})
+        or "data about" in normalized
+    ):
+        return "overview"
+    return "unsupported"
+
+
+def build_dataset_signature(
+    file_bytes: bytes,
+    file_name: str,
+    sheet_name: Optional[str] = None,
+    header: int = 0,
+) -> str:
+    """Build a stable identity for a selected uploaded dataset view."""
+
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    return "|".join((str(file_name), str(sheet_name), str(header), digest))
+
+
+def reset_assistant_context(
+    state: MutableMapping[str, Any],
+    signature: str,
+) -> None:
+    """Clear stale analysis and assistant values when the dataset changes."""
+
+    if state.get("dataset_signature") == signature:
+        return
+    for key in (
+        "analysis_results",
+        "assistant_dataset",
+        "assistant_metadata",
+        "assistant_history",
+        "assistant_question",
+        "chat_minimized",
+        "chat_closed",
+        "custom_graph_result",
+        "guided_quick_insights",
+        "guided_explore_data",
+        "guided_last_question",
+    ):
+        state.pop(key, None)
+    state["dataset_signature"] = signature
+
+
+def get_dataset_context(
+    data: pd.DataFrame,
+    analysis_results: Optional[Mapping[str, Any]] = None,
+    text_column: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build the assistant context without replacing or mutating ``data``."""
+
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError("Dataset context requires a pandas DataFrame.")
+    if data.empty:
+        raise ValueError("The dataset is empty.")
+
+    numeric = data.select_dtypes(include=[np.number]).columns.tolist()
+    date_columns = [
+        column for column in data.columns
+        if pd.api.types.is_datetime64_any_dtype(data[column])
+        or _parseable_date_ratio(data[column]) >= 0.8
+    ]
+    categorical = [
+        column for column in data.columns
+        if column not in numeric
+        and column not in date_columns
+        and (
+            isinstance(data[column].dtype, pd.CategoricalDtype)
+            or pd.api.types.is_bool_dtype(data[column])
+            or data[column].dtype == object
+            and data[column].nunique(dropna=True) <= max(20, len(data) // 2)
+        )
+    ]
+    text_columns = [
+        column for column in data.columns
+        if column not in date_columns
+        and (
+            pd.api.types.is_string_dtype(data[column])
+            or pd.api.types.is_object_dtype(data[column])
+        )
+    ]
+
+    return {
+        "data": data,
+        "analysis_results": analysis_results or {},
+        "text_column": text_column,
+        "metadata": dict(metadata or {}),
+        "columns": data.columns.tolist(),
+        "numeric_columns": numeric,
+        "categorical_columns": categorical,
+        "text_columns": text_columns,
+        "date_columns": date_columns,
+    }
+
+
+def get_demo_dataset() -> pd.DataFrame:
+    """Return a small, deterministic dataset for first-time exploration."""
+
+    return pd.DataFrame({
+        "review": [
+            "Delivery was fast and the product quality was excellent.",
+            "The item arrived damaged and support was slow to respond.",
+            "Friendly support solved my issue quickly.",
+            "The product is useful, but the packaging could improve.",
+            "Very happy with the value and simple ordering process.",
+            "The delivery was late and the instructions were unclear.",
+            "Customer service was helpful and professional.",
+            "The quality did not match the price I paid.",
+        ],
+        "rating": [5, 1, 4, 3, 5, 2, 4, 2],
+        "category": [
+            "delivery", "quality", "support", "packaging",
+            "value", "delivery", "support", "quality"
+        ],
+        "date": [
+            "2025-01-05", "2025-01-12", "2025-02-03", "2025-02-18",
+            "2025-03-02", "2025-03-15", "2025-04-04", "2025-04-21"
+        ],
+    })
+
+
+def get_guided_questions(
+    context: Mapping[str, Any],
+) -> dict[str, list[dict[str, str]]]:
+    """Return only questions supported by the current data and analyses."""
+
+    questions: dict[str, list[dict[str, str]]] = {
+        "Dataset overview": [
+            {"question": "How many rows and columns are present?",
+             "reason": "Available for every non-empty dataset."},
+            {"question": "How many missing values are present?",
+             "reason": "Available for every non-empty dataset."},
+            {"question": "What data types and columns are available?",
+             "reason": "Uses the current dataset profile."},
+        ]
+    }
+
+    results_data = _results_dataframe(context)
+    if results_data is not None and "predicted_sentiment" in results_data:
+        questions["Sentiment"] = [
+            {"question": "What percentage of reviews are positive or negative?",
+             "reason": "Uses completed sentiment predictions."},
+            {"question": "Show sentiment distribution.",
+             "reason": "Uses completed sentiment predictions."},
+            {"question": "Show the most negative reviews.",
+             "reason": "Uses analyzed records and predicted labels."},
+        ]
+
+    if results_data is not None and "predicted_emotion" in results_data:
+        questions["Emotion"] = [
+            {"question": "Which emotions are most common?",
+             "reason": "Uses completed emotion predictions."},
+            {"question": "Show emotion distribution.",
+             "reason": "Uses completed emotion predictions."},
+        ]
+
+    topics = _analysis(context, "topics")
+    if (
+        results_data is not None
+        and "discovered_topic" in results_data
+        and topics.get("topics")
+    ):
+        questions["Topics and keywords"] = [
+            {"question": "What are the main discussion topics?",
+             "reason": "Uses completed topic discovery."},
+            {"question": "What are the most frequently occurring meaningful keywords?",
+             "reason": "Counts terms in the selected feedback column."},
+            {"question": "Show the top five complaints.",
+             "reason": "Uses discovered topic and keyword evidence."},
+        ]
+
+    rating_columns = detect_rating_columns(context["data"])
+    if rating_columns:
+        questions["Ratings"] = [
+            {"question": "Show the rating distribution.",
+             "reason": "A valid 1–5 rating column is available."},
+            {"question": "What is the average, minimum, maximum, and median rating?",
+             "reason": "A valid rating column is available."},
+        ]
+
+    if context["numeric_columns"]:
+        questions["Numerical analysis"] = [
+            {"question": "Calculate the average, minimum, maximum, and median.",
+             "reason": "Numeric columns are available."},
+        ]
+
+    if (
+        context["numeric_columns"]
+        or context["categorical_columns"]
+        or context["date_columns"]
+    ):
+        questions["EDA"] = [
+            {"question": "Perform basic EDA.",
+             "reason": "Suitable numeric, categorical, or date columns exist."},
+        ]
+        if context["date_columns"]:
+            questions["EDA"].append({
+                "question": "Show monthly sentiment trends.",
+                "reason": "A valid date column is available.",
+            })
+
+    if context.get("text_column") and (
+        results_data is not None
+        or context["text_columns"]
+    ):
+        questions["Business insights"] = [
+            {"question": "What are customers most unhappy about?",
+             "reason": "Uses available feedback and completed analyses."},
+            {"question": "What are the strongest positive feedback areas?",
+             "reason": "Uses available feedback and completed analyses."},
+            {"question": "Summarize the main customer feedback findings.",
+             "reason": "Combines available topics, sentiment, and reviews."},
+        ]
+
+    return questions
+
+
+def generate_quick_insights(
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Summarize the most useful verified findings currently available."""
+
+    bullets: list[str] = []
+    evidence: dict[str, Any] = {}
+    sentiment = calculate_sentiment_statistics(context)
+    if sentiment.get("available"):
+        evidence["sentiment"] = sentiment
+        percentages = _format_percentages(sentiment)
+        bullets.append(f"Predicted sentiment: {percentages}.")
+
+    emotion = calculate_emotion_statistics(context)
+    if emotion.get("available"):
+        evidence["emotion"] = emotion
+        common = max(
+            emotion["counts"],
+            key=emotion["counts"].get
+        )
+        bullets.append(
+            f"The most common predicted emotion is {common} "
+            f"({emotion['percentages'][common]:.2f}%)."
+        )
+
+    topics = get_top_topics(context)
+    if topics.get("available"):
+        evidence["topics"] = topics
+        labels = [
+            ", ".join(item["keywords"][:3])
+            for item in topics["topics"]
+            if item["keywords"]
+        ]
+        if labels:
+            bullets.append("Top discovered themes: " + "; ".join(labels) + ".")
+
+    keywords = get_keyword_statistics(context)
+    if keywords.get("available") and keywords["keywords"]:
+        evidence["keywords"] = keywords
+        bullets.append(
+            "Frequent feedback terms: "
+            + ", ".join(item["keyword"] for item in keywords["keywords"][:5])
+            + "."
+        )
+
+    ratings = detect_rating_columns(context["data"])
+    if ratings:
+        column = ratings[0]["column"]
+        values = pd.to_numeric(
+            context["data"][column],
+            errors="coerce"
+        ).dropna()
+        if not values.empty:
+            evidence["rating"] = {
+                "column": column,
+                "mean": round(float(values.mean()), 2),
+                "median": round(float(values.median()), 2),
+            }
+            bullets.append(
+                f"Average {column} is {values.mean():.2f} "
+                f"with median {values.median():.2f}."
+            )
+
+    if not bullets:
+        bullets.append(
+            "Upload data and run at least one analysis to unlock model-based insights."
+        )
+
+    return {
+        "available": bool(evidence),
+        "headline": (
+            "Here are the strongest findings currently available."
+            if evidence
+            else "No completed model findings are available yet."
+        ),
+        "bullets": bullets,
+        "evidence": evidence,
+    }
+
+
+def _parseable_date_ratio(series: pd.Series) -> float:
+    if pd.api.types.is_numeric_dtype(series):
+        return 0.0
+    non_null = series.dropna()
+    if non_null.empty:
+        return 0.0
+    parsed = pd.to_datetime(non_null, errors="coerce", format="mixed")
+    return float(parsed.notna().mean())
+
+
+def _results_dataframe(
+    context: Mapping[str, Any],
+) -> Optional[pd.DataFrame]:
+    results = context.get("analysis_results") or {}
+    value = results.get("results_dataframe")
+    return value if isinstance(value, pd.DataFrame) else None
+
+
+def _analysis(context: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    results = context.get("analysis_results") or {}
+    analyses = results.get("analyses") or {}
+    value = analyses.get(name)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _percentage_counts(series: pd.Series) -> dict[str, Any]:
+    counts = series.dropna().astype(str).value_counts()
+    total = int(counts.sum())
+    return {
+        "counts": {str(key): int(value) for key, value in counts.items()},
+        "percentages": {
+            str(key): round(float(value / total * 100), 2)
+            for key, value in counts.items()
+        },
+        "total": total,
+    }
+
+
+def calculate_sentiment_statistics(
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Calculate statistics from completed predicted sentiment results."""
+
+    data = _results_dataframe(context)
+    if data is None or "predicted_sentiment" not in data.columns:
+        return {"available": False, "reason": "Run sentiment analysis first."}
+    statistics = _percentage_counts(data["predicted_sentiment"])
+    if not statistics["total"]:
+        return {"available": False, "reason": "No sentiment predictions are available."}
+    return {"available": True, **statistics}
+
+
+def calculate_emotion_statistics(
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Calculate statistics from completed predicted emotion results."""
+
+    data = _results_dataframe(context)
+    if data is None or "predicted_emotion" not in data.columns:
+        return {"available": False, "reason": "Run emotion analysis first."}
+    statistics = _percentage_counts(data["predicted_emotion"])
+    if not statistics["total"]:
+        return {"available": False, "reason": "No emotion predictions are available."}
+    return {"available": True, **statistics}
+
+
+def get_top_topics(context: Mapping[str, Any], limit: int = 5) -> dict[str, Any]:
+    """Return topic keywords and observed document frequencies."""
+
+    data = _results_dataframe(context)
+    analysis = _analysis(context, "topics")
+    topics = analysis.get("topics")
+    if data is None or "discovered_topic" not in data.columns or not topics:
+        return {"available": False, "reason": "Run topic discovery first."}
+
+    counts = data["discovered_topic"].value_counts()
+    topic_by_id = {item.get("topic"): item for item in topics if isinstance(item, Mapping)}
+    values = []
+    for topic_id, count in counts.head(limit).items():
+        topic = topic_by_id.get(topic_id, {})
+        values.append({
+            "topic": topic_id,
+            "count": int(count),
+            "keywords": list(topic.get("keywords", [])),
+        })
+    return {"available": True, "topics": values}
+
+
+def get_keyword_statistics(
+    context: Mapping[str, Any],
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Count meaningful words in the selected feedback column."""
+
+    column = context.get("text_column")
+    data = context.get("data")
+    if not isinstance(data, pd.DataFrame) or column not in data.columns:
+        return {"available": False, "reason": "A valid text column is required."}
+    text = " ".join(data[column].dropna().astype(str).tolist()).lower()
+    words = re.findall(r"[a-zA-Z][a-zA-Z'-]{2,}", text)
+    counts = Counter(word for word in words if word not in _STOP_WORDS)
+    return {
+        "available": True,
+        "keywords": [
+            {"keyword": word, "count": int(count)}
+            for word, count in counts.most_common(limit)
+        ],
+    }
+
+
+def _review_rows(
+    context: Mapping[str, Any],
+    label: str,
+    limit: int,
+) -> dict[str, Any]:
+    data = _results_dataframe(context)
+    text_column = context.get("text_column")
+    if data is None or label not in data.columns:
+        return {"available": False, "reason": f"Run sentiment analysis first."}
+    if text_column not in data.columns:
+        return {"available": False, "reason": "The selected text column is unavailable."}
+    expected = "negative" if "negative" in label else "positive"
+    selected = data[data[label].astype(str).str.lower().eq(expected)]
+    selected = selected.head(limit)
+    return {
+        "available": True,
+        "reviews": [
+            {"row_index": index, "text": str(row[text_column])}
+            for index, row in selected.iterrows()
+        ],
+    }
+
+
+def get_negative_reviews(
+    context: Mapping[str, Any],
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Return actual analyzed reviews predicted as negative."""
+
+    return _review_rows(context, "predicted_sentiment", limit)
+
+
+def get_positive_reviews(
+    context: Mapping[str, Any],
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Return actual analyzed reviews predicted as positive."""
+
+    return _review_rows(context, "predicted_sentiment", limit)
+
+
+def _chart(
+    chart_type: str,
+    title: str,
+    rows: list[dict[str, Any]],
+    x: str,
+    y: str,
+) -> dict[str, Any]:
+    return {
+        "type": chart_type,
+        "title": title,
+        "data": rows,
+        "x": x,
+        "y": y,
+    }
+
+
+def _distribution_chart(
+    stats: Mapping[str, Any],
+    title: str,
+    chart_type: str = "bar",
+) -> Optional[dict[str, Any]]:
+    if not stats.get("available"):
+        return None
+    rows = [
+        {"label": key, "value": value}
+        for key, value in stats["counts"].items()
+    ]
+    return _chart(chart_type, title, rows, "label", "value")
+
+
+def _numeric_statistics(context: Mapping[str, Any]) -> dict[str, Any]:
+    data = context["data"]
+    values: dict[str, Any] = {}
+    for column in context["numeric_columns"]:
+        series = pd.to_numeric(data[column], errors="coerce").dropna()
+        if series.empty:
+            continue
+        values[str(column)] = {
+            "count": int(series.size),
+            "mean": round(float(series.mean()), 4),
+            "minimum": float(series.min()),
+            "maximum": float(series.max()),
+            "median": float(series.median()),
+        }
+    return values
+
+
+def generate_eda_summary(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Generate verified EDA statistics and chart specifications."""
+
+    data = context["data"]
+    charts: list[dict[str, Any]] = []
+    numeric = _numeric_statistics(context)
+    for column in context["numeric_columns"][:5]:
+        values = pd.to_numeric(data[column], errors="coerce").dropna()
+        if not values.empty:
+            charts.append(_chart(
+                "histogram",
+                f"Distribution of {column}",
+                [{"value": float(value)} for value in values],
+                "value",
+                "value",
+            ))
+            charts.append(_chart(
+                "box",
+                f"Spread of {column}",
+                [{"value": float(value)} for value in values],
+                "value",
+                "value",
+            ))
+
+    categorical = {}
+    for column in context["categorical_columns"][:5]:
+        counts = data[column].dropna().astype(str).value_counts().head(10)
+        categorical[str(column)] = {str(k): int(v) for k, v in counts.items()}
+        if not counts.empty:
+            charts.append(_chart(
+                "bar",
+                f"Distribution of {column}",
+                [{"label": str(k), "value": int(v)} for k, v in counts.items()],
+                "label",
+                "value",
+            ))
+
+    correlations = data[context["numeric_columns"]].corr().round(4).fillna(0)
+    if len(context["numeric_columns"]) >= 2:
+        charts.append({
+            "type": "heatmap",
+            "title": "Numeric correlations",
+            "data": correlations.to_dict(),
+            "columns": correlations.columns.tolist(),
+        })
+
+    date_trends = []
+    if context["date_columns"]:
+        date_column = context["date_columns"][0]
+        results_data = _results_dataframe(context)
+        trend_source = (
+            results_data
+            if results_data is not None and date_column in results_data.columns
+            else data
+        )
+        dates = pd.to_datetime(
+            trend_source[date_column],
+            errors="coerce",
+            format="mixed"
+        )
+        trend_data = pd.DataFrame({
+            "date": dates,
+            "sentiment": (
+                trend_source["predicted_sentiment"]
+                if "predicted_sentiment" in trend_source.columns
+                else pd.Series(index=trend_source.index, dtype="object")
+            ),
+        }).dropna(subset=["date"])
+        if not trend_data.empty:
+            trend_data["period"] = trend_data["date"].dt.to_period("M").astype(str)
+            if trend_data["sentiment"].notna().any():
+                grouped = (
+                    trend_data.groupby(["period", "sentiment"])
+                    .size()
+                    .groupby(level=0)
+                    .transform(lambda values: values / values.sum() * 100)
+                )
+                date_trends = [
+                    {
+                        "label": str(period),
+                        "value": round(float(value), 2),
+                        "series": str(sentiment),
+                    }
+                    for (period, sentiment), value in grouped.items()
+                ]
+                title = "Monthly predicted sentiment trend"
+            else:
+                counts = trend_data["period"].value_counts().sort_index()
+                date_trends = [
+                    {"label": str(period), "value": int(count)}
+                    for period, count in counts.items()
+                ]
+                title = f"Records over time: {date_column}"
+            charts.append(_chart(
+                "line",
+                title,
+                date_trends,
+                "label",
+                "value",
+            ))
+
+    return {
+        "numeric_statistics": numeric,
+        "categorical_distributions": categorical,
+        "date_columns": context["date_columns"],
+        "date_trends": date_trends,
+        "correlations": correlations.to_dict() if len(context["numeric_columns"]) >= 2 else {},
+        "charts": charts,
+    }
+
+
+def _format_percentages(stats: Mapping[str, Any]) -> str:
+    return ", ".join(
+        f"{label}: {percentage:.2f}%"
+        for label, percentage in stats.get("percentages", {}).items()
+    )
+
+
+def answer_question(
+    question: str,
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Answer a supported question using only supplied data and results."""
+
+    intent = detect_intent(question)
+    response: dict[str, Any] = {
+        "question": question,
+        "intent": intent,
+        "answer": "",
+        "evidence": {},
+        "charts": [],
+    }
+
+    if intent == "overview":
+        data = context["data"]
+        response["answer"] = (
+            f"The dataset contains {len(data):,} rows and {len(data.columns):,} "
+            f"columns. Missing values total {int(data.isna().sum().sum()):,}. "
+            f"Columns: {', '.join(map(str, data.columns))}."
+        )
+        response["evidence"] = {
+            "rows": len(data),
+            "columns": len(data.columns),
+            "missing_values": int(data.isna().sum().sum()),
+            "column_types": {
+                "numeric": context["numeric_columns"],
+                "categorical": context["categorical_columns"],
+                "text": context["text_columns"],
+                "date": context["date_columns"],
+            },
+        }
+    elif intent == "sentiment":
+        stats = calculate_sentiment_statistics(context)
+        response["evidence"] = stats
+        response["answer"] = (
+            "Sentiment predictions are unavailable. Run sentiment analysis first."
+            if not stats["available"]
+            else f"Based on model predictions, {_format_percentages(stats)}."
+        )
+        chart = _distribution_chart(stats, "Predicted sentiment distribution", "pie")
+        if chart:
+            response["charts"].append(chart)
+    elif intent == "emotion":
+        stats = calculate_emotion_statistics(context)
+        response["evidence"] = stats
+        response["answer"] = (
+            "Emotion predictions are unavailable. Run emotion analysis first."
+            if not stats["available"]
+            else f"Based on model predictions, {_format_percentages(stats)}."
+        )
+        chart = _distribution_chart(stats, "Predicted emotion distribution")
+        if chart:
+            response["charts"].append(chart)
+    elif intent == "negative_reviews":
+        reviews = get_negative_reviews(context)
+        response["evidence"] = reviews
+        response["answer"] = (
+            reviews["reason"] if not reviews["available"]
+            else f"Here are {len(reviews['reviews'])} analyzed reviews predicted as negative."
+        )
+    elif intent == "positive_reviews":
+        reviews = get_positive_reviews(context)
+        response["evidence"] = reviews
+        response["answer"] = (
+            reviews["reason"] if not reviews["available"]
+            else f"Here are {len(reviews['reviews'])} analyzed reviews predicted as positive."
+        )
+    elif intent == "topics":
+        topics = get_top_topics(context)
+        response["evidence"] = topics
+        response["answer"] = (
+            topics["reason"] if not topics["available"]
+            else "Top discovered topics: " + "; ".join(
+                f"Topic {item['topic']} ({item['count']} records): "
+                f"{', '.join(item['keywords'])}"
+                for item in topics["topics"]
+            )
+        )
+        if topics.get("available"):
+            response["charts"].append(_chart(
+                "horizontal_bar",
+                "Discovered topic frequency",
+                [
+                    {"label": f"Topic {item['topic']}", "value": item["count"]}
+                    for item in topics["topics"]
+                ],
+                "label",
+                "value",
+            ))
+    elif intent == "keywords":
+        keywords = get_keyword_statistics(context)
+        response["evidence"] = keywords
+        response["answer"] = (
+            keywords["reason"] if not keywords["available"]
+            else "Most frequent meaningful keywords: " + ", ".join(
+                f"{item['keyword']} ({item['count']})"
+                for item in keywords["keywords"]
+            )
+        )
+    elif intent == "rating_stats":
+        data = context["data"]
+        columns = [
+            column for column in context["numeric_columns"]
+            if "rating" in str(column).lower()
+            or "score" in str(column).lower()
+            or "star" in str(column).lower()
+        ]
+        if not columns:
+            response["answer"] = "No suitable numeric rating column was found."
+        else:
+            column = columns[0]
+            values = pd.to_numeric(data[column], errors="coerce").dropna()
+            response["evidence"] = {
+                "column": column,
+                "mean": float(values.mean()),
+                "minimum": float(values.min()),
+                "maximum": float(values.max()),
+                "median": float(values.median()),
+            }
+            response["answer"] = (
+                f"{column} has mean {values.mean():.2f}, median {values.median():.2f}, "
+                f"minimum {values.min():g}, and maximum {values.max():g}."
+            )
+            response["charts"].append(_chart(
+                "bar",
+                f"Rating distribution: {column}",
+                [{"label": str(k), "value": int(v)}
+                 for k, v in values.value_counts().sort_index().items()],
+                "label",
+                "value",
+            ))
+    elif intent == "numeric_stats":
+        stats = _numeric_statistics(context)
+        response["evidence"] = stats
+        response["answer"] = (
+            "No suitable numeric columns were found."
+            if not stats else "Numeric statistics: " + "; ".join(
+                f"{column} mean={values['mean']}, median={values['median']}, "
+                f"min={values['minimum']}, max={values['maximum']}"
+                for column, values in stats.items()
+            )
+            )
+    elif intent == "category_compare":
+        data = _results_dataframe(context)
+        if data is None or "predicted_sentiment" not in data.columns:
+            response["answer"] = "Run sentiment analysis first."
+        else:
+            candidates = [
+                column for column in context["categorical_columns"]
+                if column in data.columns and column != context.get("text_column")
+            ]
+            if not candidates:
+                response["answer"] = "No suitable categorical column was found."
+            else:
+                column = candidates[0]
+                grouped = (
+                    data.groupby(column)["predicted_sentiment"]
+                    .value_counts(normalize=True)
+                    .mul(100)
+                    .rename("percentage")
+                    .reset_index()
+                )
+                response["evidence"] = {
+                    "column": column,
+                    "values": grouped.to_dict("records"),
+                }
+                response["answer"] = (
+                    f"Sentiment percentages grouped by {column} are shown in "
+                    "the evidence table."
+                )
+    elif intent == "date_trends":
+        summary = generate_eda_summary(context)
+        response["evidence"] = {
+            "date_columns": summary["date_columns"],
+            "date_trends": summary["date_trends"],
+        }
+        response["charts"] = [
+            chart for chart in summary["charts"] if chart["type"] == "line"
+        ]
+        response["answer"] = (
+            "No valid date column was found."
+            if not summary["date_trends"]
+            else "Here is the monthly record trend for the detected date column."
+        )
+    elif intent == "eda":
+        summary = generate_eda_summary(context)
+        response["evidence"] = summary
+        response["charts"] = summary["charts"]
+        response["answer"] = (
+            f"Basic EDA found {len(summary['numeric_statistics'])} numeric "
+            f"columns, {len(summary['categorical_distributions'])} categorical "
+            f"columns, and {len(summary['date_columns'])} date columns."
+        )
+    elif intent == "business_insights":
+        negative = get_negative_reviews(context)
+        positive = get_positive_reviews(context)
+        topics = get_top_topics(context)
+        parts = []
+        if topics.get("available"):
+            parts.append(
+                "The most discussed areas are "
+                + ", ".join(", ".join(item["keywords"][:3]) for item in topics["topics"])
+                + "."
+            )
+        if negative.get("available"):
+            parts.append(
+                f"There are {len(negative['reviews'])} sampled negative reviews "
+                "available for review."
+            )
+        if positive.get("available"):
+            parts.append(
+                f"There are {len(positive['reviews'])} sampled positive reviews "
+                "available for review."
+            )
+        response["answer"] = (
+            " ".join(parts)
+            if parts else "Run sentiment and topic analyses to generate evidence-based business insights."
+        )
+        response["evidence"] = {"topics": topics, "negative_reviews": negative,
+                                "positive_reviews": positive}
+    else:
+        response["answer"] = (
+            "I can answer dataset overview, sentiment, emotion, topic, keyword, "
+            "rating, numerical, EDA, and business-insight questions. "
+            "Please ask about one of those areas; I am not an unrestricted "
+            "conversational LLM."
+        )
+
+    return response

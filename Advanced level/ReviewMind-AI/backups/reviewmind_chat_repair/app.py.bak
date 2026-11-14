@@ -1,0 +1,622 @@
+"""ReviewMind AI Streamlit application."""
+
+from pathlib import Path
+import sys
+
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.assistant_engine import (
+    answer_question,
+    build_dataset_signature,
+    get_dataset_context,
+    get_demo_dataset,
+    get_guided_questions,
+    get_keyword_statistics,
+    reset_assistant_context,
+)
+from src.analysis_engine import run_analysis, run_automatic_analysis
+from src.data_loader import inspect_workbook, load_dataset
+from src.data_profiler import (
+    detect_date_columns,
+    detect_label_columns,
+    detect_rating_columns,
+    detect_text_columns,
+    profile_dataset,
+    validate_feedback_column,
+)
+from src.exporter import build_report_pdf
+from src.visualization import (
+    build_chart,
+    build_custom_chart,
+    chart_bytes,
+    default_date_grouping,
+    supported_charts,
+)
+
+
+st.set_page_config(page_title="ReviewMind AI", page_icon="🧠", layout="wide")
+
+with open(Path(__file__).parent / "style.css", encoding="utf-8") as css_file:
+    st.markdown(f"<style>{css_file.read()}</style>", unsafe_allow_html=True)
+
+
+TERMS = {
+    "Sentiment": ("The overall positive or negative tone of feedback.",
+                  "Example: “Fast delivery” is likely positive."),
+    "Emotions": ("A finer-grained label such as joy, anger, sadness, or fear.",
+                 "Emotion detection adds nuance beyond positive/negative."),
+    "Confidence score": ("The model's estimated certainty for one prediction.",
+                         "Lower confidence means the result deserves more review."),
+    "TF-IDF": ("A text representation that gives weight to useful, distinctive terms.",
+               "It helps Logistic Regression learn which words correlate with sentiment."),
+    "Logistic Regression": ("A fast supervised classifier used here with TF-IDF features.",
+                            "It predicts a class probability for each feedback record."),
+    "DistilBERT": ("A compact transformer model that understands context in text.",
+                   "It can capture phrasing that simple word counts may miss."),
+    "Topic modelling": ("An unsupervised method for grouping recurring language into themes.",
+                        "ReviewMind uses TF-IDF and NMF to discover topic keywords."),
+    "Evaluation metrics": ("Accuracy, precision, recall, F1, and ROC-AUC compare predictions with labels.",
+                           "Metrics are shown only when a valid binary label column exists."),
+}
+
+
+def rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+
+
+def show_empty_state():
+    st.markdown(
+        '<div class="hero"><span class="eyebrow">CUSTOMER FEEDBACK INTELLIGENCE</span>'
+        '<h1>Turn feedback into decisions.</h1>'
+        '<p>ReviewMind AI analyzes sentiment, emotions, topics, ratings, and trends '
+        'locally — without paid APIs or fabricated answers.</p></div>',
+        unsafe_allow_html=True,
+    )
+    one, two, three = st.columns(3)
+    one.markdown("### 01 · Load data\nUpload CSV/Excel or start with the guided demo.")
+    two.markdown("### 02 · Analyze\nChoose automatic or custom local ML analyses.")
+    three.markdown("### 03 · Discover\nAsk grounded questions and export findings.")
+    if st.button("Try the guided demo", type="primary"):
+        st.session_state["demo_requested"] = True
+        rerun()
+
+
+def load_current_data():
+    """Load a source once per signature and retain the original dataframe."""
+
+    using_demo = st.session_state.get("use_demo", False)
+    uploaded = st.session_state.get("uploaded_file")
+    if not using_demo and uploaded is None:
+        return None
+    if using_demo:
+        data = get_demo_dataset()
+        name, raw = "ReviewMind demo dataset", data.to_csv(index=True).encode()
+        sheet, header = None, 0
+    else:
+        name = uploaded.name
+        extension = Path(name).suffix.lower()
+        sheet, header = None, 0
+        if extension in {".xlsx", ".xls"}:
+            info = inspect_workbook(uploaded, preview_rows=12)
+            sheet = st.selectbox("Worksheet", info["sheet_names"], key="selected_sheet")
+            selected = next(item for item in info["sheets"] if item["name"] == sheet)
+            suggested = selected["suggested_header_row"]
+            header = st.selectbox(
+                "Header row (0-based)", list(range(max(1, suggested + 2))),
+                index=suggested, key="selected_header",
+            )
+            with st.expander("Preview workbook rows"):
+                st.dataframe(selected["preview"], use_container_width=True)
+            data = load_dataset(uploaded, sheet_name=sheet, header=header)
+        else:
+            data = load_dataset(uploaded)
+        raw = uploaded.getvalue()
+    signature = build_dataset_signature(raw, name, sheet, header)
+    reset_assistant_context(st.session_state, signature)
+    if st.session_state.get("dataset_signature") == signature:
+        st.session_state["original_data"] = data.copy()
+        st.session_state["assistant_dataset"] = data.copy()
+        st.session_state["assistant_metadata"] = {
+            "file_name": name, "sheet_name": sheet, "header": header,
+        }
+    return data
+
+
+def show_overview(data):
+    profile = profile_dataset(data)
+    st.subheader("Dataset health")
+    cols = st.columns(5)
+    for column, label, value in zip(
+        cols,
+        ("Rows", "Columns", "Missing values", "Duplicate rows", "Empty rows"),
+        (profile["rows"], profile["columns"], profile["missing_value_total"],
+         profile["duplicate_rows"], profile["completely_empty_rows"]),
+    ):
+        column.metric(label, f"{value:,}")
+    with st.expander("Inspect schema and quality details"):
+        st.dataframe(pd.DataFrame({
+            "dtype": profile["data_types"],
+            "missing": profile["missing_values"],
+            "blank": profile["empty_string_values"],
+        }), use_container_width=True)
+        st.caption("Original uploaded data stays unchanged; analysis results are stored separately.")
+
+
+def show_analysis(data):
+    show_overview(data)
+    detected_text = detect_text_columns(data)
+    recommended = [item["column"] for item in detected_text]
+    st.subheader("Configure analysis")
+    if not detected_text:
+        st.warning("No high-confidence feedback column was detected. Select a non-numeric text column.")
+    options = data.columns.tolist()
+    selected_text = st.selectbox(
+        "Feedback column", options,
+        index=options.index(recommended[0]) if recommended else 0,
+        format_func=lambda value: f"{value} (recommended)" if value in recommended else str(value),
+        key="selected_text",
+    )
+    try:
+        validation = validate_feedback_column(data, selected_text)
+        st.caption(f"{validation['usable_rows']:,} usable feedback rows ({validation['coverage_percentage']:.1f}% coverage).")
+    except ValueError as error:
+        st.error(str(error))
+        return
+    labels = ["None"] + detect_label_columns(data)
+    selected_label = st.selectbox("Ground-truth sentiment label (optional)", labels)
+    mode = st.radio("Analysis mode", ["Automatic", "Custom"], horizontal=True)
+    model = st.selectbox("Sentiment model", ["tfidf", "distilbert"], format_func=lambda x: "TF-IDF + Logistic Regression" if x == "tfidf" else "DistilBERT")
+    analyses = ["sentiment", "emotion", "topics"]
+    if mode == "Custom":
+        analyses = []
+        for key, label in (("sentiment", "Sentiment"), ("emotion", "Emotion"), ("topics", "Topics"), ("evaluation", "Evaluation")):
+            if st.checkbox(label, value=key != "evaluation", key=f"analysis_{key}"):
+                analyses.append(key)
+    else:
+        st.info("Automatic mode selects sentiment, emotions, topics, and evaluation when a valid label is available.")
+    config_signature = (
+        selected_text, selected_label, mode, model, tuple(analyses)
+    )
+    if st.session_state.get("analysis_config_signature") != config_signature:
+        st.session_state.pop("analysis_results", None)
+        st.session_state["analysis_config_signature"] = config_signature
+    if st.button("Run analysis", type="primary", use_container_width=True):
+        if not analyses:
+            st.error("Select at least one analysis.")
+            return
+        try:
+            with st.spinner("Running local models; this may take a moment..."):
+                results = (
+                    run_automatic_analysis(data, selected_text, selected_label if selected_label != "None" else None, model)
+                    if mode == "Automatic"
+                    else run_analysis(data, selected_text, analyses, selected_label if selected_label != "None" else None, model)
+                )
+            st.session_state["analysis_results"] = results
+            st.success("Analysis complete.")
+        except (ValueError, FileNotFoundError, RuntimeError) as error:
+            st.error(f"Analysis could not be completed: {error}")
+    results = st.session_state.get("analysis_results")
+    if results:
+        show_results(results)
+
+
+def show_results(results):
+    frame = results.get("results_dataframe")
+    if not isinstance(frame, pd.DataFrame):
+        st.warning("No analyzed rows are available.")
+        return
+    st.subheader("Analysis results")
+    cols = st.columns(4)
+    cols[0].metric("Original rows", f"{results.get('original_row_count', len(frame)):,}")
+    cols[1].metric("Analyzed rows", f"{len(frame):,}")
+    cols[2].metric("Excluded rows", f"{results.get('excluded_row_count', 0):,}")
+    cols[3].metric("Analyses", ", ".join(results.get("selected_analyses", [])))
+    evaluation = results.get("analyses", {}).get("evaluation", {})
+    if evaluation.get("metrics"):
+        st.caption("Evaluation against the selected ground-truth labels")
+        metric_cols = st.columns(len(evaluation["metrics"]))
+        for column, (name, value) in zip(metric_cols, evaluation["metrics"].items()):
+            column.metric(name.replace("_", " ").title(), f"{value:.3f}")
+    st.dataframe(frame.head(500), use_container_width=True)
+    with st.expander("Analysis status and limitations"):
+        st.json(results.get("analysis_summary", {}))
+        st.caption("Rows with missing or blank feedback are excluded from model predictions and remain accounted for.")
+    st.download_button("Download predictions CSV", frame.to_csv(index=False).encode("utf-8-sig"),
+                       "reviewmind_analysis_results.csv", "text/csv", use_container_width=True)
+
+
+def _assistant_context(data):
+    results = st.session_state.get("analysis_results", {})
+    selected_text = st.session_state.get("selected_text")
+    if selected_text not in data.columns:
+        candidates = detect_text_columns(data)
+        selected_text = candidates[0]["column"] if candidates else None
+    return get_dataset_context(
+        data,
+        results,
+        selected_text,
+        st.session_state.get("assistant_metadata"),
+    )
+
+
+def _chat_questions(context):
+    """Group only currently supported assistant questions for the widget."""
+
+    grouped = {
+        "Sentiment": [],
+        "Emotions": [],
+        "Topics": [],
+        "Complaints": [],
+        "Business Insights": [],
+    }
+    suggestions = get_guided_questions(context)
+    for category, items in suggestions.items():
+        for item in items:
+            question = item["question"]
+            normalized = question.lower()
+            if "emotion" in category.lower():
+                target = "Emotions"
+            elif "topic" in category.lower():
+                target = "Topics"
+            elif any(word in normalized for word in ("unhappy", "complaint", "negative")):
+                target = "Complaints"
+            elif "business" in category.lower():
+                target = "Business Insights"
+            elif "sentiment" in category.lower():
+                target = "Sentiment"
+            else:
+                target = "Business Insights"
+            grouped[target].append(item)
+    return {key: value for key, value in grouped.items() if value}
+
+
+def _render_assistant_chart(chart):
+    """Render a chart specification returned by the local assistant."""
+
+    chart_type = chart.get("type")
+    rows = chart.get("data", [])
+    figure, axis = plt.subplots(figsize=(5.8, 3.2))
+    if chart_type == "heatmap":
+        sns.heatmap(pd.DataFrame(rows), annot=True, cmap="Blues", fmt=".2f", ax=axis)
+    else:
+        chart_data = pd.DataFrame(rows)
+        if chart_data.empty:
+            plt.close(figure)
+            return
+        x_column = chart.get("x", "label")
+        y_column = chart.get("y", "value")
+        if chart_type == "pie":
+            axis.pie(
+                chart_data[y_column],
+                labels=chart_data[x_column],
+                autopct="%1.1f%%",
+            )
+        elif chart_type == "histogram":
+            axis.hist(chart_data[x_column], bins=min(12, max(3, len(chart_data))))
+        elif chart_type == "horizontal_bar":
+            axis.barh(chart_data[x_column], chart_data[y_column])
+        elif chart_type == "line":
+            if "series" in chart_data.columns:
+                for series, values in chart_data.groupby("series"):
+                    axis.plot(values[x_column], values[y_column], marker="o", label=series)
+                axis.legend()
+            else:
+                axis.plot(chart_data[x_column], chart_data[y_column], marker="o")
+            axis.tick_params(axis="x", rotation=35)
+        elif chart_type == "box":
+            axis.boxplot(chart_data[y_column].dropna())
+        else:
+            axis.bar(chart_data[x_column], chart_data[y_column])
+            axis.tick_params(axis="x", rotation=35)
+        axis.set_ylabel(y_column)
+    axis.set_title(chart.get("title", "ReviewMind chart"))
+    figure.tight_layout()
+    st.pyplot(figure, use_container_width=True)
+    plt.close(figure)
+
+
+def render_floating_chat(data):
+    """Render the persistent, dataset-grounded ReviewMind chat widget."""
+
+    context = _assistant_context(data)
+    history = st.session_state.setdefault("assistant_history", [])
+    with st.popover("💬 Ask ReviewMind", use_container_width=False):
+        controls = st.columns([2, 1, 1])
+        controls[0].markdown("**Ask ReviewMind**")
+        if controls[1].button("Clear", key="chat_clear", use_container_width=True):
+            st.session_state["assistant_history"] = []
+            rerun()
+        if controls[2].button("−", key="chat_minimize", use_container_width=True):
+            st.session_state["chat_minimized"] = True
+            rerun()
+
+        if st.session_state.get("chat_minimized"):
+            st.caption("Chat minimized. Reopen this widget and choose + to continue.")
+            if st.button("+ Restore chat", key="chat_restore", use_container_width=True):
+                st.session_state["chat_minimized"] = False
+                rerun()
+            return
+
+        st.caption("Grounded in your current dataset and completed analyses.")
+        if not history:
+            st.info(
+                "Hi! I can explain the dataset, summarize predictions, "
+                "and surface evidence-backed customer insights."
+            )
+
+        for item in history:
+            with st.chat_message("user"):
+                st.write(item["question"])
+            with st.chat_message("assistant"):
+                st.write(item["answer"])
+                evidence = item.get("evidence", {})
+                if evidence.get("reviews"):
+                    st.dataframe(
+                        pd.DataFrame(evidence["reviews"]),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                for chart in item.get("charts", []):
+                    _render_assistant_chart(chart)
+
+        grouped_questions = _chat_questions(context)
+        if grouped_questions:
+            st.markdown("**Suggested questions**")
+            for category, items in grouped_questions.items():
+                with st.expander(category, expanded=not history):
+                    for question_index, item in enumerate(items):
+                        if st.button(
+                            item["question"],
+                            key=f"chat_question_{category}_{question_index}",
+                            use_container_width=True,
+                        ):
+                            history.append(answer_question(item["question"], context))
+                            rerun()
+
+        question = st.text_input(
+            "Ask about this dataset",
+            key="assistant_question",
+            placeholder="e.g. What are the most common emotions?",
+        )
+        ask_columns = st.columns([3, 1])
+        if ask_columns[0].button("Send", type="primary", key="chat_send", use_container_width=True):
+            if question.strip():
+                history.append(answer_question(question, context))
+                rerun()
+            else:
+                st.warning("Type a question or choose a suggestion.")
+        if ask_columns[1].button("Close", key="chat_close", use_container_width=True):
+            st.session_state["chat_minimized"] = True
+            rerun()
+
+        if history:
+            followups = [
+                item["question"]
+                for items in grouped_questions.values()
+                for item in items
+                if item["question"] != history[-1]["question"]
+            ][:2]
+            if followups:
+                st.caption("Try next: " + " · ".join(followups))
+
+
+def show_visualizations(data):
+    st.header("Visualization Center")
+    current_data = st.session_state.get("original_data")
+    if not isinstance(current_data, pd.DataFrame):
+        current_data = data
+    with st.expander("Custom Graph Builder", expanded=True):
+        show_custom_graph_builder(current_data)
+    st.divider()
+    results = st.session_state.get("analysis_results", {})
+    keyword_counts = {}
+    selected_text = st.session_state.get("selected_text")
+    if selected_text not in data.columns:
+        candidates = detect_text_columns(data)
+        selected_text = candidates[0]["column"] if candidates else None
+    if selected_text:
+        context = get_dataset_context(data, results, selected_text)
+        keyword_counts = {item["keyword"]: item["count"] for item in get_keyword_statistics(context).get("keywords", [])}
+    results = {**results, "keyword_counts": keyword_counts}
+    names = supported_charts(data, results)
+    labels = {"sentiment": "Sentiment donut", "emotion": "Emotion distribution", "topics": "Topic frequency",
+              "rating": "Rating distribution", "keywords": "Keyword frequency", "trend": "Date trend",
+              "numeric": "Numeric distribution", "correlation": "Correlation heatmap"}
+    if not names:
+        st.info("Run an analysis or upload numeric/date/rating data to unlock supported visualizations.")
+        return
+    selected = st.selectbox("Visualization", names, format_func=lambda x: labels[x])
+    built = build_chart(data, selected, results)
+    if built is None:
+        st.info("This visualization is not supported by the current data.")
+        return
+    figure, interpretation = built
+    st.pyplot(figure, use_container_width=True)
+    st.caption(interpretation)
+    st.download_button("Download chart PNG", chart_bytes(figure), f"reviewmind_{selected}.png", "image/png")
+
+
+def show_custom_graph_builder(data):
+    """Render the first working reusable custom graph configuration."""
+
+    date_columns = [item["column"] for item in detect_date_columns(data)]
+    rating_columns = [item["column"] for item in detect_rating_columns(data)]
+    if not date_columns or not rating_columns:
+        missing = []
+        if not date_columns:
+            missing.append("a date column with parseable dates")
+        if not rating_columns:
+            missing.append("a numeric 1–5 rating column named like rating, score, or stars")
+        st.info(
+            "Custom Graph Builder needs " + " and ".join(missing) + ". "
+            "Select or rename suitable columns in the uploaded dataset."
+        )
+        return
+
+    st.caption(
+        "Builds a chart from the current uploaded dataframe only. "
+        "Invalid dates and ratings are excluded and never replaced with sample values."
+    )
+    controls = st.columns(4)
+    date_column = controls[0].selectbox(
+        "Grouping column",
+        date_columns,
+        key="custom_graph_date_column",
+    )
+    value_column = controls[1].selectbox(
+        "Value column",
+        rating_columns,
+        key="custom_graph_value_column",
+    )
+    chart_type = controls[2].selectbox(
+        "Chart type",
+        ["Pie chart"],
+        key="custom_graph_chart_type",
+    )
+    aggregation = controls[3].selectbox(
+        "Aggregation",
+        ["Average"],
+        key="custom_graph_aggregation",
+    )
+    grouping_options = ["Day", "Week", "Month"]
+    default_group = default_date_grouping(data, date_column).title()
+    date_grouping = st.selectbox(
+        "Date grouping",
+        grouping_options,
+        index=grouping_options.index(default_group),
+        key="custom_graph_date_grouping",
+        help="Month is selected automatically when the dataset has many unique dates.",
+    )
+    config = {
+        "chart_type": chart_type,
+        "grouping_column": date_column,
+        "value_column": value_column,
+        "aggregation": aggregation,
+        "date_grouping": date_grouping.lower(),
+    }
+    if st.button("Build custom chart", type="primary", key="build_custom_graph"):
+        try:
+            _, aggregated = build_custom_chart(data, **config)
+            st.session_state["custom_graph_result"] = {
+                "config": config,
+                "aggregated": aggregated,
+            }
+        except ValueError as error:
+            st.session_state.pop("custom_graph_result", None)
+            st.error(str(error))
+
+    result = st.session_state.get("custom_graph_result")
+    if not isinstance(result, dict):
+        return
+    saved_config = result.get("config", {})
+    aggregated = result.get("aggregated")
+    if not isinstance(aggregated, pd.DataFrame) or saved_config != config:
+        return
+    try:
+        figure, _ = build_custom_chart(data, **saved_config)
+    except ValueError as error:
+        st.error(str(error))
+        return
+    st.pyplot(figure, use_container_width=True)
+    st.caption(
+        f"Average {saved_config['value_column']} grouped by "
+        f"{saved_config['date_grouping']} {saved_config['grouping_column']}. "
+        f"Used {int(aggregated['record_count'].sum()):,} valid rows."
+    )
+    st.dataframe(aggregated, use_container_width=True, hide_index=True)
+    downloads = st.columns(2)
+    downloads[0].download_button(
+        "Download custom chart PNG",
+        chart_bytes(figure),
+        "reviewmind_custom_graph.png",
+        "image/png",
+        use_container_width=True,
+    )
+    downloads[1].download_button(
+        "Download aggregated CSV",
+        aggregated.to_csv(index=False).encode("utf-8-sig"),
+        "reviewmind_custom_graph_data.csv",
+        "text/csv",
+        use_container_width=True,
+    )
+
+
+def show_exports(data):
+    results = st.session_state.get("analysis_results", {})
+    st.subheader("Export center")
+    frame = results.get("results_dataframe")
+    if isinstance(frame, pd.DataFrame):
+        st.download_button("Download analysis CSV", frame.to_csv(index=False).encode("utf-8-sig"),
+                           "reviewmind_analysis.csv", "text/csv", use_container_width=True)
+    else:
+        st.info("Run an analysis to create a predictions CSV.")
+    report = build_report_pdf(data, results, profile_dataset(data))
+    st.download_button("Download PDF report", report, "reviewmind_report.pdf", "application/pdf", use_container_width=True)
+
+
+def show_terms():
+    st.subheader("Key terms & guide")
+    st.caption("Plain-language explanations of the methods used in ReviewMind AI.")
+    for term, (definition, example) in TERMS.items():
+        with st.expander(term):
+            st.write(definition)
+            st.caption(example)
+
+
+if st.session_state.pop("demo_requested", False):
+    st.session_state["source_choice"] = "Use demo dataset"
+
+st.sidebar.markdown("## 🧠 ReviewMind AI")
+st.sidebar.caption("Local customer feedback intelligence")
+source = st.sidebar.radio("Start with", ["Upload a dataset", "Use demo dataset"], key="source_choice")
+if source == "Use demo dataset":
+    st.session_state["use_demo"] = True
+else:
+    was_using_demo = st.session_state.get("use_demo", False)
+    st.session_state["use_demo"] = False
+    uploaded = st.sidebar.file_uploader("CSV or Excel file", type=["csv", "xlsx", "xls"])
+    if uploaded is not None:
+        st.session_state["uploaded_file"] = uploaded
+    elif was_using_demo:
+        st.session_state.pop("uploaded_file", None)
+        st.session_state.pop("original_data", None)
+
+page = st.sidebar.radio(
+    "Workspace",
+    ["Overview", "Analyze", "Visualizations", "Exports", "Key Terms"],
+    key="page",
+)
+try:
+    data = load_current_data()
+except (ValueError, FileNotFoundError, OSError) as error:
+    data = None
+    st.error(f"We could not load this dataset: {error}")
+
+if data is None:
+    show_empty_state()
+else:
+    if page == "Overview":
+        show_overview(data)
+        st.subheader("Next best step")
+        st.write("Open **Analyze** to select a feedback column and run the preserved local ML pipeline.")
+    elif page == "Analyze":
+        show_analysis(data)
+    elif page == "Visualizations":
+        show_visualizations(data)
+    elif page == "Exports":
+        show_exports(data)
+    else:
+        show_terms()
+
+    render_floating_chat(data)
+
+st.sidebar.divider()
+st.sidebar.caption("No paid APIs • No arbitrary code execution • Original data preserved")
